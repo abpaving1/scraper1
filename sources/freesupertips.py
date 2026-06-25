@@ -11,18 +11,21 @@ Scrape cadence: every 4 hours (tips update throughout the day as editors
 publish; running more frequently yields diminishing returns and risks
 rate-limiting).
 
+DOM STRUCTURE (verified June 2026):
+  Tips are grouped into .Card elements (one per accumulator/tip group).
+  Each .Leg inside a .Card represents one individual tip within the group.
+  The tip selection is in .Leg__win, the match context in .Leg__lose,
+  and the kickoff time in a <time> element within .Leg__teams.
+  Odds are NOT available per-leg on the listing page (only the accumulator
+  total is shown via .BetGrid); we fall back to None and confidence=0.65.
+
 VERIFICATION CHECKLIST — run with SCRAPE_HEADLESS=false before production:
   [ ] FST_TIPS_URL still resolves to the today's tips listing
-  [ ] CSS selector TIP_ROW_SEL matches each individual tip card/row
-  [ ] MATCH_SEL matches the "Team A v Team B" text within a row
-  [ ] LEAGUE_SEL matches the competition label (e.g. "Premier League")
-  [ ] SELECTION_SEL matches the tip text (e.g. "Home Win", "Over 2.5 Goals")
-  [ ] ODDS_SEL matches the displayed decimal odds string
-  [ ] KICKOFF_SEL matches the kickoff time string (format varies — see parser)
-  [ ] TIPSTER_SEL matches the expert author name (if shown per-tip)
-  [ ] Confidence extraction: FST doesn't publish explicit confidence scores —
-      we derive a fixed confidence of 0.65 for all FST picks, representing
-      editorial-expert baseline authority (see _derive_confidence docstring)
+  [ ] CSS selector TIP_ROW_SEL matches each individual tip .Leg element
+  [ ] SELECTION_SEL matches .Leg__win (e.g. "Home Win", "Over 2.5 Goals")
+  [ ] MATCH_SEL matches .Leg__lose (opponent/fixture context)
+  [ ] KICKOFF_SEL matches the <time> element inside .Leg__teams
+  [ ] TIPSTER_SEL (optional per-card byline)
 """
 
 import asyncio
@@ -30,6 +33,7 @@ import re
 from datetime import datetime, timezone, date, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import structlog
 from playwright.async_api import Page, TimeoutError as PWTimeout
@@ -42,22 +46,26 @@ from queues.redis_publisher import PicksPublisher
 from sources.base_scraper import BaseSourceScraper
 from utils.logger import get_logger
 
+UK_TZ = ZoneInfo("Europe/London")
+
 logger = get_logger(__name__)
 
 # ── URL ──────────────────────────────────────────────────────────────────────
-FST_TIPS_URL = settings.freesupertips_base_url
-UK_OFFSET_HOURS = 1
+# The canonical football tips listing URL (confirmed June 2026).
+FST_TIPS_URL = "https://www.freesupertips.com/free-football-betting-tips/"
 
-# ── CSS SELECTORS (verify with SCRAPE_HEADLESS=false) ────────────────────────
-# These are structured placeholders derived from FST's known DOM pattern as of
-# June 2025. Verify each before going live — see checklist in module docstring.
-TIP_ROW_SEL = ".tip-card, .tips-list__item, article.tip"           # VERIFY
-MATCH_SEL = ".tip-card__fixture, .tip__match, .fixture-name"        # VERIFY
-LEAGUE_SEL = ".tip-card__competition, .tip__league, .competition"   # VERIFY
-SELECTION_SEL = ".tip-card__selection, .tip__pick, .selection-text" # VERIFY
-ODDS_SEL = ".tip-card__odds, .tip__odds, .odds-value"               # VERIFY
-KICKOFF_SEL = ".tip-card__time, .tip__kickoff, time"                # VERIFY
-TIPSTER_SEL = ".tip-card__expert, .tip__author, .expert-name"       # VERIFY
+# ── CSS SELECTORS (verified against live DOM, June 2026) ─────────────────────
+# FST renders tips inside .Card containers. Each .Leg is one tip within a
+# group (accumulator). The .Leg__win div holds the selection text and
+# .Leg__lose holds the fixture context ("vs Opponent" or "at Opponent").
+# There are no per-tip odds on the listing page — only the accumulator total
+# is shown; we therefore omit odds and fall back to the editorial baseline.
+TIP_ROW_SEL = ".Leg"                          # one tip per .Leg element
+SELECTION_SEL = ".Leg__win"                  # tip text: "Home Win", "BTTS", etc.
+MATCH_SEL = ".Leg__lose"                     # match context: "vs Chelsea"
+KICKOFF_SEL = ".Leg__teams time"             # <time> element with kickoff text
+ODDS_SEL = None                              # no per-tip odds on listing page
+TIPSTER_SEL = ".TipHeader h2"               # card-level headline (not per-leg)
 
 # FST's fixed source slug and synthetic tipster identity (one editorial team,
 # not individual tipsters with tracked ROI — modelled similarly to Forebet).
@@ -76,8 +84,14 @@ FST_BASE_CONFIDENCE = 0.65
 def _parse_match(raw: str) -> tuple[str, str]:
     """
     Splits 'Arsenal v Chelsea' or 'Arsenal vs Chelsea' into (home, away).
-    Returns ('', '') if the format isn't recognised — these picks are
-    dropped upstream rather than stored with empty team names.
+
+    On the FST listing page, .Leg__lose contains a phrase like:
+      'vs Germany'  → we only know the opponent, not which is home/away.
+      'at Germany'  → away fixture; FST team is the away side.
+    In these cases we treat the selection's implied team as home and the
+    opponent as away (an approximation — league context is not given per-leg).
+
+    Returns ('', '') if no team pair can be derived.
     """
     for sep in (" v ", " vs ", " vs. ", " - "):
         if sep in raw:
@@ -108,41 +122,62 @@ def _parse_odds(raw: str) -> Optional[Decimal]:
 def _parse_kickoff(raw: str, today: date) -> Optional[datetime]:
     """
     Attempts to parse FST's kickoff time strings into a UTC datetime.
-    FST typically shows times in UK local time (GMT/BST) without an
-    explicit date — we assume today unless the string includes a date fragment.
+    FST shows times in UK local time (GMT in winter, BST=UTC+1 in summer).
+    We use zoneinfo to get the correct offset automatically rather than
+    hardcoding +1 year-round (which would be wrong in winter).
 
-    Formats observed:
-      "15:00"      — time only, assume today (UK local)
-      "3:00pm"     — 12h format, assume today
-      "Sat 21 Jun" — date only (no time) — returns None (no time component)
-      "Sat 15:00"  — day + time — map to nearest upcoming day
+    Formats handled:
+      "15:00"       — time only, assume today (UK local)
+      "3:00pm"      — 12h format, assume today
+      "Sat 15:00"   — day-of-week + time — parse to nearest future day
+      "Sat 21 Jun"  — date only (no time) — returns None
     """
     raw = raw.strip().lower()
 
-    # Time-only: "15:00" or "3:00pm"
-    time_only = re.search(r"(\d{1,2}):(\d{2})\s*(am|pm)?", raw)
-    if time_only:
-        hour = int(time_only.group(1))
-        minute = int(time_only.group(2))
-        meridiem = time_only.group(3)
-        if meridiem == "pm" and hour < 12:
-            hour += 12
-        elif meridiem == "am" and hour == 12:
-            hour = 0
-        try:
-            local_dt = datetime(
-                today.year,
-                today.month,
-                today.day,
-                hour,
-                minute,
-                tzinfo=timezone(timedelta(hours=UK_OFFSET_HOURS)),
-            )
-            return local_dt.astimezone(timezone.utc)
-        except ValueError:
+    # Day-of-week + time: "sat 15:00"
+    day_time = re.search(
+        r"(mon|tue|wed|thu|fri|sat|sun)\s+(\d{1,2}):(\d{2})\s*(am|pm)?", raw
+    )
+    if day_time:
+        day_abbr = day_time.group(1)
+        hour = int(day_time.group(2))
+        minute = int(day_time.group(3))
+        meridiem = day_time.group(4)
+    else:
+        # Time-only: "15:00" or "3:00pm"
+        day_abbr = None
+        time_only = re.search(r"(\d{1,2}):(\d{2})\s*(am|pm)?", raw)
+        if time_only:
+            hour = int(time_only.group(1))
+            minute = int(time_only.group(2))
+            meridiem = time_only.group(3)
+        else:
             return None
 
-    return None
+    if meridiem == "pm" and hour < 12:
+        hour += 12
+    elif meridiem == "am" and hour == 12:
+        hour = 0
+
+    try:
+        if day_abbr:
+            # Map to the nearest upcoming weekday
+            days = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+            target_weekday = days[day_abbr]
+            days_ahead = (target_weekday - today.weekday()) % 7
+            target_date = today + timedelta(days=days_ahead)
+        else:
+            target_date = today
+
+        # Use zoneinfo for correct BST/GMT offset — not hardcoded +1
+        local_dt = datetime(
+            target_date.year, target_date.month, target_date.day,
+            hour, minute,
+            tzinfo=UK_TZ,
+        )
+        return local_dt.astimezone(timezone.utc)
+    except (ValueError, KeyError):
+        return None
 
 
 def _classify_market(selection_text: str) -> MarketType:
@@ -182,19 +217,15 @@ def _derive_confidence(odds: Optional[Decimal]) -> float:
     return 0.55
 
 
-@retry(
-    retry=retry_if_exception_type((PWTimeout, ConnectionError, OSError)),
-    stop=stop_after_attempt(settings.scrape_max_retries),
-    wait=wait_exponential(multiplier=1, min=2, max=10),
-    reraise=True,
-)
 async def _scrape_page(page: Page) -> list[RawPick]:
-    """Navigates to the FST tips page and extracts all tip rows."""
+    """
+    Extracts all tip rows from the already-loaded FST tips page.
+    The caller is responsible for navigation — this function does NOT
+    call page.goto() to avoid double navigation.
+    """
     import random
 
-    await page.goto(FST_TIPS_URL, timeout=settings.scrape_timeout_ms, wait_until="domcontentloaded")
-
-    # Human-like pause before interacting
+    # Human-like pause before scraping
     await asyncio.sleep(random.uniform(settings.scrape_jitter_min_seconds, settings.scrape_jitter_max_seconds))
 
     # Wait for at least one tip row — if none appear within timeout, FST has
@@ -219,20 +250,7 @@ async def _scrape_page(page: Page) -> list[RawPick]:
 
     for row in tip_rows:
         try:
-            # ── Match teams ──────────────────────────────────────────────
-            match_el = await row.query_selector(MATCH_SEL)
-            if not match_el:
-                continue
-            match_text = (await match_el.inner_text()).strip()
-            home, away = _parse_match(match_text)
-            if not home or not away:
-                continue
-
-            # ── League ───────────────────────────────────────────────────
-            league_el = await row.query_selector(LEAGUE_SEL)
-            league = (await league_el.inner_text()).strip() if league_el else None
-
-            # ── Selection ────────────────────────────────────────────────
+            # ── Selection (tip text) ──────────────────────────────────────
             sel_el = await row.query_selector(SELECTION_SEL)
             if not sel_el:
                 continue
@@ -240,17 +258,34 @@ async def _scrape_page(page: Page) -> list[RawPick]:
             if not selection_text:
                 continue
 
-            # ── Odds ─────────────────────────────────────────────────────
-            odds_el = await row.query_selector(ODDS_SEL)
-            odds_raw = (await odds_el.inner_text()).strip() if odds_el else ""
-            odds = _parse_odds(odds_raw)
+            # ── Match context (.Leg__lose: "vs Germany" / "at Paraguay") ──
+            match_el = await row.query_selector(MATCH_SEL)
+            match_raw = (await match_el.inner_text()).strip() if match_el else ""
 
-            # ── Kickoff ──────────────────────────────────────────────────
+            # Build a combined fixture string for _parse_match.
+            # .Leg__lose already has the opponent; we synthesise "Team A vs Team B".
+            # We don't know the FST team's name from the listing page alone,
+            # so we flag unknown home and use the context string as away.
+            combined = f"{selection_text} {match_raw}" if match_raw else selection_text
+            home, away = _parse_match(combined)
+            if not home or not away:
+                # Fall back: use selection as home team hint, context as away
+                opponent = re.sub(r"^(?:vs\.?|at)\s+", "", match_raw, flags=re.IGNORECASE).strip()
+                if not opponent:
+                    logger.debug("fst_match_parse_no_opponent", raw=match_raw)
+                    continue
+                home = "FST Pick"   # placeholder — real name not on listing page
+                away = opponent
+
+            # ── Kickoff time ──────────────────────────────────────────────
             ko_el = await row.query_selector(KICKOFF_SEL)
             ko_raw = (await ko_el.inner_text()).strip() if ko_el else ""
             kickoff = _parse_kickoff(ko_raw, today)
 
-            # ── Tipster name (optional per-tip byline) ───────────────────
+            # ── Odds — not available per-leg on listing page ──────────────
+            odds: Optional[Decimal] = None  # no per-leg odds on FST listing
+
+            # ── Tipster (card-level headline used as tipster context) ──────
             tipster_el = await row.query_selector(TIPSTER_SEL)
             tipster_name = (
                 (await tipster_el.inner_text()).strip() if tipster_el else FST_TIPSTER_NAME
@@ -265,13 +300,13 @@ async def _scrape_page(page: Page) -> list[RawPick]:
                 tipster_name=tipster_name or FST_TIPSTER_NAME,
                 home_team_name=home,
                 away_team_name=away,
-                league_name=league,
+                league_name=None,  # not available per-leg on listing
                 kickoff_utc=kickoff,
                 market=market,
                 selection=selection_text,
                 odds_decimal=odds,
                 confidence=confidence,
-                raw_text=match_text + " | " + selection_text,
+                raw_text=(selection_text + " | " + match_raw).strip(" | "),
                 posted_at=scraped_at,
                 scraped_at=scraped_at,
             )
@@ -287,13 +322,15 @@ async def _scrape_page(page: Page) -> list[RawPick]:
 
 class FreeSuperTipsScraper(BaseSourceScraper):
     source_slug = SOURCE_SLUG
-    base_url = settings.freesupertips_base_url
+    base_url = FST_TIPS_URL
 
     async def scrape(self) -> list[RawPick]:
         page = await self.new_stealth_page()
         picks: list[RawPick] = []
         try:
             logger.info("fst_scrape_starting", url=self.base_url, headless=settings.scrape_headless)
+            # goto_with_retry handles navigation; _scrape_page does NOT call
+            # page.goto() again — this avoids the double-navigation bug.
             await self.goto_with_retry(page, self.base_url)
             picks = await _scrape_page(page)
         finally:

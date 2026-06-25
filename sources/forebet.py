@@ -7,33 +7,24 @@ there is no per-tipster identity here — the "tipster" is Forebet's model
 itself, represented as a single synthetic tipster row in the DB.
 
 Anti-bot profile:
-  - Forebet is rated Low–Medium difficulty in the project brief. It does NOT
-    use Cloudflare at the same level as OLBG. However, it does serve content
-    through JavaScript rendering, so Playwright is still required.
-  - playwright-stealth is applied for fingerprint consistency.
-  - Residential proxy sticky sessions are used (same session prefix as OLBG
-    scrapers to share the proxy pool).
-  - Human-timing jitter is applied between page navigations.
+  - Forebet serves JS-rendered content and returns 403 to plain HTTP requests.
+    Playwright + stealth is required.
+  - Forebet has periodically restructured its markup; selectors below are
+    the best-known values but MUST be re-verified against the live DOM
+    (run with SCRAPE_HEADLESS=false) before production.
 
-Scraping strategy:
-  - Target: /en/football-predictions (default landing page, today's matches).
-  - The page renders a table of predictions per league section.
-  - We iterate league sections → rows within each section.
-  - Each row yields: home team, away team, kickoff time, 1X2 probs, predicted
-    score, and avg goals figures.
-  - From each row we emit up to three RawPick instances:
-      1. Match result (Home Win / Draw / Away Win — whichever has highest prob)
-      2. Over/Under 2.5 (if avg goals >= 2.5, emit Over; if <= 1.8, emit Under)
-      3. BTTS (if both avg_goals_home >= 1.1 and avg_goals_away >= 1.1 → Yes)
-  - Only picks where the highest probability exceeds MIN_CONFIDENCE_PCT are
-    emitted. This filters out coin-flip predictions.
-
-CSS selectors:
-  ⚠️  PLACEHOLDER — run with SCRAPE_HEADLESS=false and inspect live DOM before
-  going to production. Forebet has restructured its markup periodically.
-  Selector names follow a descriptive pattern so it's clear what each targets;
-  replace the string values after DOM inspection without changing the variable
-  names (consumer code references the constants).
+Verification steps for each selector:
+  1. Run: SCRAPE_HEADLESS=false python -m sources.forebet
+  2. Open DevTools on https://www.forebet.com/en/football-predictions
+  3. Inspect the predictions table and confirm:
+     - SEL_PREDICTION_ROW  matches each repeating match row
+     - SEL_HOME_TEAM       matches the home team text
+     - SEL_AWAY_TEAM       matches the away team text
+     - SEL_KICKOFF_TIME    matches the date/time cell
+     - SEL_LEAGUE_NAME     matches the league label
+     - SEL_PROB_HOME/DRAW/AWAY  match the three probability cells (e.g. "62%")
+     - SEL_PREDICTED_SCORE matches the predicted score cell (e.g. "2:1")
+     - SEL_AVG_GOALS_HOME/AWAY  match the two avg-goals cells
 """
 
 from __future__ import annotations
@@ -72,24 +63,26 @@ FOREBET_TIPSTER_NAME: str = "Forebet Algorithm"
 FOREBET_TIPSTER_EXTERNAL_ID: str = "forebet-algorithm-v1"
 
 # ─── CSS selectors ────────────────────────────────────────────────────────────
-# ⚠️  VERIFY THESE AGAINST LIVE DOM before production use.
-# Forebet uses a table layout. Each league section has a header row followed
-# by match rows. The structure as of mid-2025 is documented below; update
-# after DOM inspection with SCRAPE_HEADLESS=false.
+# These selectors target Forebet's table-based predictions layout.
+# Forebet returns 403 to plain HTTP requests, so selectors cannot be verified
+# without a live Playwright session. The values below are the best-known
+# patterns based on Forebet's historical markup (mid-2025). Re-verify before
+# production by running: SCRAPE_HEADLESS=false python -m sources.forebet
+#
+# If a selector is wrong the scraper logs a forebet_prediction_rows_not_found
+# error or yields 0 rows — run headless=false to inspect and fix.
 
-# Outer container holding all prediction rows (the full predictions table).
-# In the live DOM this is typically a <div> wrapping a <table> or a styled
-# grid. Inspect: look for the element that repeats once per match.
-SEL_PREDICTION_ROW = "table.schema tr.rcnt"
+# Row containing one match prediction (repeats once per match in the table).
+SEL_PREDICTION_ROW = "table.schema tr.rcnt"   # UNVERIFIED — verify with DevTools
 
 # Within each row:
-SEL_HOME_TEAM     = "td.homeTeam span"          # home team name text node
-SEL_AWAY_TEAM     = "td.awayTeam span"          # away team name text node
-SEL_KICKOFF_TIME  = "td.date_bah"               # raw "DD/MM HH:MM" or ISO text
-SEL_LEAGUE_NAME   = "td.shortTag span"          # league label (e.g. "Premier League")
+SEL_HOME_TEAM     = "td.homeTeam span"         # home team name text node
+SEL_AWAY_TEAM     = "td.awayTeam span"         # away team name text node
+SEL_KICKOFF_TIME  = "td.date_bah"              # raw "DD/MM HH:MM" or ISO text
+SEL_LEAGUE_NAME   = "td.shortTag span"         # league label (e.g. "Premier League")
 
-# 1X2 probability cells — three consecutive <td> elements with the %  values.
-SEL_PROB_HOME     = "td.predict span.forepr"    # e.g. "62%"
+# 1X2 probability cells — three consecutive <td> elements with % values.
+SEL_PROB_HOME     = "td.predict span.forepr"   # e.g. "62%"
 SEL_PROB_DRAW     = "td.predict:nth-child(2) span.forepr"
 SEL_PROB_AWAY     = "td.predict:nth-child(3) span.forepr"
 

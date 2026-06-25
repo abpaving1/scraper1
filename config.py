@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     # Override via FOREBET_SCRAPE_INTERVAL_HOURS in .env if needed.
     forebet_scrape_interval_hours: int = 6
 
-    freesupertips_base_url: str = "https://www.freesupertips.com/football-tips/"
+    freesupertips_base_url: str = "https://www.freesupertips.com/free-football-betting-tips/"
     freesupertips_scrape_interval_hours: int = 4
 
     soccervista_base_url: str = "https://www.soccervista.com/"

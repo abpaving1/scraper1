@@ -5,6 +5,15 @@ SoccerVista publishes statistical match predictions with home/draw/away
 probabilities. This scraper extracts the predictions table, converts the
 probabilities into fair odds, derives confidence, and publishes RawPick
 objects to Redis.
+
+NOTE: SoccerVista is a React SPA — all prediction data is rendered at
+runtime by JavaScript. This scraper therefore requires Playwright (not a
+plain HTTP fetch). The CSS selectors target the hydrated DOM.
+
+Selectors (verified June 2026 against live DOM with Playwright):
+  See TABLE_ROW_SEL and friends below. They reflect the Tailwind-styled
+  React components rendered at https://www.soccervista.com/predictions/.
+  Re-verify with SCRAPE_HEADLESS=false if SoccerVista deploys a new bundle.
 """
 
 import asyncio
@@ -241,33 +250,29 @@ class SoccerVistaScraper(BaseSourceScraper):
     source_slug = SOURCE_SLUG
     base_url = SV_BASE_URL
 
-    async def scrape(self):
-        return await _scrape_page(self.page)
+    async def scrape(self) -> list[RawPick]:
+        """
+        Opens a stealth page, navigates to SoccerVista, and extracts picks.
+        Uses BaseSourceScraper's browser context (same pattern as FST).
+        """
+        page = await self.new_stealth_page()
+        picks: list[RawPick] = []
+        try:
+            logger.info("sv_scrape_starting", url=self.base_url, headless=settings.scrape_headless)
+            await self.goto_with_retry(page, self.base_url)
+            picks = await _scrape_page(page)
+        finally:
+            await page.close()
 
-    async def run(self):
-        from playwright.async_api import async_playwright
-        from playwright_stealth import stealth_async
+        logger.info("sv_scrape_complete", source=self.source_slug, picks=len(picks))
+        return picks
 
-        async with async_playwright() as pw:
-            browser = await pw.chromium.launch(headless=settings.scrape_headless)
-            context = await browser.new_context(
-                viewport={"width": 1280, "height": 800},
-                locale="en-GB",
-                timezone_id="Europe/London",
-            )
-            page = await context.new_page()
-            await stealth_async(page)
-
-            self.page = page
-
-            try:
-                picks = await self.scrape()
-                for pick in picks:
-                    await self.publisher.publish(pick)
-                logger.info("sv_scrape_complete", published=len(picks))
-                return picks
-            finally:
-                await browser.close()
+    async def run(self) -> list[RawPick]:
+        """Overrides BaseSourceScraper.run() to also publish picks to Redis."""
+        picks = await self.scrape()
+        for pick in picks:
+            await self.publish_pick(pick)
+        return picks
 
 
 # ─────────────────────────────────────────────────────────────────────────────
