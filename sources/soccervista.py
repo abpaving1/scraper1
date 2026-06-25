@@ -1,45 +1,42 @@
 """
-SoccerVista scraper (Task 4).
+SoccerVista scraper (unified lifecycle version).
 
-SoccerVista publishes statistical match predictions with home/draw/away
-probabilities. This scraper extracts the predictions table, converts the
-probabilities into fair odds, derives confidence, and publishes RawPick
-objects to Redis.
+Uses BaseSourceScraper for:
+- Playwright/browser/context lifecycle
+- stealth page creation
+- navigation with retry
+- publishing via BaseSourceScraper.run()
 
-NOTE: SoccerVista is a React SPA — all prediction data is rendered at
-runtime by JavaScript. This scraper therefore requires Playwright (not a
-plain HTTP fetch). The CSS selectors target the hydrated DOM.
-
-Selectors (verified June 2026 against live DOM with Playwright):
-  See TABLE_ROW_SEL and friends below. They reflect the Tailwind-styled
-  React components rendered at https://www.soccervista.com/predictions/.
-  Re-verify with SCRAPE_HEADLESS=false if SoccerVista deploys a new bundle.
+This module focuses only on:
+- selectors
+- page extraction
+- probability/odds/confidence logic
 """
+
+from __future__ import annotations
 
 import asyncio
 import re
 from datetime import datetime, timezone, date
 from decimal import Decimal
-from typing import Optional
+from typing import Optional, List
 
 from playwright.async_api import Page, TimeoutError as PWTimeout
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from config import settings
 from models.pick import MarketType, RawPick
-from queues.redis_publisher import PicksPublisher
-from utils.logger import get_logger
 from sources.base_scraper import BaseSourceScraper
+from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# URL — this is the correct predictions page
+# URL
 # ─────────────────────────────────────────────────────────────────────────────
 SV_BASE_URL = "https://www.soccervista.com/predictions/"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CSS SELECTORS — verified against the live site
+# CSS SELECTORS
 # ─────────────────────────────────────────────────────────────────────────────
 TABLE_ROW_SEL = "div.match"
 HOME_TEAM_SEL = "div.teams div.home"
@@ -141,21 +138,19 @@ def _parse_kickoff(raw: str, today: date) -> Optional[datetime]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Page scraper
+# Page extraction (no navigation here)
 # ─────────────────────────────────────────────────────────────────────────────
 
-@retry(
-    retry=retry_if_exception_type((PWTimeout, ConnectionError, OSError)),
-    stop=stop_after_attempt(settings.scrape_max_retries),
-    wait=wait_exponential(multiplier=1, min=2, max=10),
-    reraise=True,
-)
-async def _scrape_page(page: Page) -> list[RawPick]:
+async def _scrape_page(page: Page) -> List[RawPick]:
+    """
+    Extracts all prediction rows from an already-loaded SoccerVista page.
+    Caller is responsible for navigation (no page.goto() here).
+    """
     import random
 
-    logger.info("sv_scrape_starting", url=SV_BASE_URL, headless=settings.scrape_headless)
+    logger.info("sv_scrape_starting_dom", url=SV_BASE_URL, headless=settings.scrape_headless)
 
-    await page.goto(SV_BASE_URL, timeout=settings.scrape_timeout_ms, wait_until="domcontentloaded")
+    # Human-like pause before scraping
     await asyncio.sleep(random.uniform(settings.scrape_jitter_min_seconds, settings.scrape_jitter_max_seconds))
 
     try:
@@ -172,7 +167,7 @@ async def _scrape_page(page: Page) -> list[RawPick]:
     rows = await page.query_selector_all(TABLE_ROW_SEL)
     logger.info("sv_rows_found", count=len(rows))
 
-    picks: list[RawPick] = []
+    picks: List[RawPick] = []
     today = date.today()
     scraped_at = datetime.now(timezone.utc)
 
@@ -188,9 +183,15 @@ async def _scrape_page(page: Page) -> list[RawPick]:
             if not home or not away or home == away:
                 continue
 
-            home_pct = _parse_probability(await (await row.query_selector(HOME_PCT_SEL)).inner_text())
-            draw_pct = _parse_probability(await (await row.query_selector(DRAW_PCT_SEL)).inner_text())
-            away_pct = _parse_probability(await (await row.query_selector(AWAY_PCT_SEL)).inner_text())
+            home_pct_el = await row.query_selector(HOME_PCT_SEL)
+            draw_pct_el = await row.query_selector(DRAW_PCT_SEL)
+            away_pct_el = await row.query_selector(AWAY_PCT_SEL)
+            if not home_pct_el or not draw_pct_el or not away_pct_el:
+                continue
+
+            home_pct = _parse_probability(await home_pct_el.inner_text())
+            draw_pct = _parse_probability(await draw_pct_el.inner_text())
+            away_pct = _parse_probability(await away_pct_el.inner_text())
             if any(p is None for p in [home_pct, draw_pct, away_pct]):
                 continue
 
@@ -243,20 +244,22 @@ async def _scrape_page(page: Page) -> list[RawPick]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Scraper class (used by cli.py)
+# Scraper class (unified lifecycle)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class SoccerVistaScraper(BaseSourceScraper):
     source_slug = SOURCE_SLUG
     base_url = SV_BASE_URL
 
-    async def scrape(self) -> list[RawPick]:
+    async def scrape(self) -> List[RawPick]:
         """
-        Opens a stealth page, navigates to SoccerVista, and extracts picks.
-        Uses BaseSourceScraper's browser context (same pattern as FST).
+        Opens a stealth page, navigates via BaseSourceScraper.goto_with_retry,
+        then extracts picks via _scrape_page.
+        Publishing is handled by BaseSourceScraper.run().
         """
         page = await self.new_stealth_page()
-        picks: list[RawPick] = []
+        picks: List[RawPick] = []
+
         try:
             logger.info("sv_scrape_starting", url=self.base_url, headless=settings.scrape_headless)
             await self.goto_with_retry(page, self.base_url)
@@ -266,53 +269,3 @@ class SoccerVistaScraper(BaseSourceScraper):
 
         logger.info("sv_scrape_complete", source=self.source_slug, picks=len(picks))
         return picks
-
-    async def run(self) -> list[RawPick]:
-        """Overrides BaseSourceScraper.run() to also publish picks to Redis."""
-        picks = await self.scrape()
-        for pick in picks:
-            await self.publish_pick(pick)
-        return picks
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Standalone runner (optional)
-# ─────────────────────────────────────────────────────────────────────────────
-
-async def run(publisher: PicksPublisher) -> None:
-    """Standalone entry point for debugging."""
-    from playwright.async_api import async_playwright
-    from playwright_stealth import stealth_async
-
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=settings.scrape_headless)
-        context = await browser.new_context(
-            viewport={"width": 1280, "height": 800},
-            locale="en-GB",
-            timezone_id="Europe/London",
-        )
-        page = await context.new_page()
-        await stealth_async(page)
-
-        try:
-            picks = await _scrape_page(page)
-            for pick in picks:
-                await publisher.publish(pick)
-            logger.info("sv_scrape_complete", published=len(picks))
-        finally:
-            await browser.close()
-
-
-if __name__ == "__main__":
-    from utils.logger import configure_logging
-
-    async def _main():
-        configure_logging()
-        pub = PicksPublisher()
-        await pub.connect()
-        try:
-            await run(pub)
-        finally:
-            await pub.close()
-
-    asyncio.run(_main())
