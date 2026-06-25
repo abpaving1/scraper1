@@ -1,0 +1,16 @@
+playwright==1.45.0
+playwright-stealth==1.0.6
+# playwright-stealth==1.0.6 imports pkg_resources internally. Recent setuptools
+# releases have dropped pkg_resources (deprecated, slated for removal as of
+# 2025-11-30), so a fresh `pip install -r requirements.txt` into a clean venv
+# breaks `import playwright_stealth` with ModuleNotFoundError unless we pin
+# setuptools to a version that still ships it. Revisit when upgrading to
+# playwright-stealth 2.x (different API — Stealth class, not stealth_async()).
+setuptools<81
+redis==5.0.7
+pydantic==2.8.2
+pydantic-settings==2.3.4
+python-dotenv==1.0.1
+tenacity==8.5.0
+structlog==24.1.0
+asyncpg==0.29.0
