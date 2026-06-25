@@ -9,6 +9,9 @@ Usage:
 import asyncio
 import os
 import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 os.environ.setdefault("PROXY_HOST", "fake-host")

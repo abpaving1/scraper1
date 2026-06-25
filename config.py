@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     soccervista_base_url: str = "https://www.soccervista.com/"
     soccervista_scrape_interval_hours: int = 6
 
+    bettingexpert_base_url: str = "https://www.bettingexpert.com/tips/football"
+    bettingexpert_scrape_interval_hours: int = 4
+
+
     olbg_base_url: str = "https://www.olbg.com"
 
     proxy_enabled: bool = False

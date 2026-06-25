@@ -211,7 +211,7 @@ def test_derive_picks_over_25_emitted():
     # avg total = 2.0 + 1.5 = 3.5 → Over 2.5
     p = _make_prediction(avg_goals_home=2.0, avg_goals_away=1.5)
     results = _scraper._derive_picks(p)
-    over = next((r for r in results if r.market == "over_under_25"), None)
+    over = next((r for r in results if r.market == "over_under"), None)
     assert over is not None
     assert over.selection == "Over 2.5"
 
@@ -219,7 +219,7 @@ def test_derive_picks_under_25_emitted():
     # avg total = 0.7 + 0.8 = 1.5 → Under 2.5
     p = _make_prediction(avg_goals_home=0.7, avg_goals_away=0.8)
     results = _scraper._derive_picks(p)
-    under = next((r for r in results if r.market == "over_under_25"), None)
+    under = next((r for r in results if r.market == "over_under"), None)
     assert under is not None
     assert under.selection == "Under 2.5"
 
@@ -242,16 +242,17 @@ def test_derive_picks_no_avg_goals_skips_ou_and_btts():
     p = _make_prediction(avg_goals_home=None, avg_goals_away=None)
     results = _scraper._derive_picks(p)
     markets = {r.market for r in results}
-    assert "over_under_25" not in markets
+    assert "over_under" not in markets
     assert "btts" not in markets
 
 def test_derive_picks_confidence_capped():
     # Very high confidence should cap at 0.85 (Over) and 0.80 (Under/BTTS)
     p = _make_prediction(avg_goals_home=4.0, avg_goals_away=4.0)
     results = _scraper._derive_picks(p)
-    over = next((r for r in results if r.market == "over_under_25"), None)
+    over = next((r for r in results if r.market == "over_under"), None)
     assert over is not None
     assert over.confidence <= 0.85
+
 
 
 # ─── Runner ───────────────────────────────────────────────────────────────────
