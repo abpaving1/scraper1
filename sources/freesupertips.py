@@ -32,19 +32,21 @@ from decimal import Decimal, InvalidOperation
 from typing import Optional
 
 import structlog
-from playwright.async_api import async_playwright, Page, TimeoutError as PWTimeout
+from playwright.async_api import Page, TimeoutError as PWTimeout
 from playwright_stealth import stealth_async
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from config import settings
 from models.pick import MarketType, RawPick
 from queues.redis_publisher import PicksPublisher
+from sources.base_scraper import BaseSourceScraper
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 # ── URL ──────────────────────────────────────────────────────────────────────
-FST_TIPS_URL = "https://www.freesupertips.com/football-tips/"
+FST_TIPS_URL = settings.freesupertips_base_url
+UK_OFFSET_HOURS = 1
 
 # ── CSS SELECTORS (verify with SCRAPE_HEADLESS=false) ────────────────────────
 # These are structured placeholders derived from FST's known DOM pattern as of
@@ -127,11 +129,16 @@ def _parse_kickoff(raw: str, today: date) -> Optional[datetime]:
             hour += 12
         elif meridiem == "am" and hour == 12:
             hour = 0
-        # Assume UK local = UTC+1 (BST) during football season; UTC otherwise.
-        # Conservative: store as UTC-naive, flag for timezone-aware backfill.
-        # TODO: use zoneinfo to localise properly once deployed.
         try:
-            return datetime(today.year, today.month, today.day, hour, minute, tzinfo=timezone.utc)
+            local_dt = datetime(
+                today.year,
+                today.month,
+                today.day,
+                hour,
+                minute,
+                tzinfo=timezone(timedelta(hours=UK_OFFSET_HOURS)),
+            )
+            return local_dt.astimezone(timezone.utc)
         except ValueError:
             return None
 
@@ -278,30 +285,31 @@ async def _scrape_page(page: Page) -> list[RawPick]:
     return picks
 
 
+class FreeSuperTipsScraper(BaseSourceScraper):
+    source_slug = SOURCE_SLUG
+    base_url = settings.freesupertips_base_url
+
+    async def scrape(self) -> list[RawPick]:
+        page = await self.new_stealth_page()
+        picks: list[RawPick] = []
+        try:
+            logger.info("fst_scrape_starting", url=self.base_url, headless=settings.scrape_headless)
+            await self.goto_with_retry(page, self.base_url)
+            picks = await _scrape_page(page)
+        finally:
+            await page.close()
+
+        logger.info("fst_scrape_complete", source=self.source_slug, picks=len(picks))
+        return picks
+
+
 async def run(publisher: PicksPublisher) -> None:
     """Entry point: launches browser, scrapes FST, publishes to Redis."""
-    async with async_playwright() as pw:
-        proxy = {
-            "server": f"http://{settings.proxy_host}:{settings.proxy_port}",
-            "username": settings.proxy_username,
-            "password": settings.proxy_password,
-        }
-        browser = await pw.chromium.launch(headless=settings.scrape_headless, proxy=proxy)
-        context = await browser.new_context(
-            viewport={"width": 1280, "height": 800},
-            locale="en-GB",
-            timezone_id="Europe/London",
-        )
-        page = await context.new_page()
-        await stealth_async(page)
-
-        try:
-            picks = await _scrape_page(page)
-            for pick in picks:
-                await publisher.publish(pick)
-            logger.info("fst_scrape_complete", published=len(picks))
-        finally:
-            await browser.close()
+    async with FreeSuperTipsScraper() as scraper:
+        picks = await scraper.scrape()
+        for pick in picks:
+            await publisher.publish(pick)
+        logger.info("fst_scrape_complete", published=len(picks))
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ Usage:
 import asyncio
 import os
 import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 # Settings requires these at import time — fill in dummy values if you don't
@@ -21,6 +22,9 @@ os.environ.setdefault("PROXY_HOST", "fake-host")
 os.environ.setdefault("PROXY_PORT", "1234")
 os.environ.setdefault("PROXY_USERNAME", "fake-user")
 os.environ.setdefault("PROXY_PASSWORD", "fake-pass")
+
+# Ensure the repository root is on sys.path when running this file directly.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sources.base_scraper import BaseSourceScraper  # noqa: E402
 

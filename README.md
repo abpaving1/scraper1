@@ -52,7 +52,7 @@ Add to the `Settings` class in `config.py`:
 
 ```python
 fst_base_url: str = "https://www.freesupertips.com/football-tips/"
-soccervista_base_url: str = "https://www.soccervista.com/football-predictions.html"
+soccervista_base_url: str = "https://www.soccervista.com/"
 ```
 
 No new environment variables or API keys required — both sources are public.
@@ -88,7 +88,7 @@ Open DevTools on `https://www.freesupertips.com/football-tips/` and verify:
 SCRAPE_HEADLESS=false python scrapers/soccervista.py
 ```
 
-Open DevTools on `https://www.soccervista.com/football-predictions.html` and verify:
+Open DevTools on `https://www.soccervista.com/` and verify:
 
 | Constant | What to find | Update if wrong |
 |---|---|---|

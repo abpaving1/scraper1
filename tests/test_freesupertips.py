@@ -7,6 +7,7 @@ Run with:
 """
 
 import sys
+from pathlib import Path
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
@@ -17,7 +18,11 @@ os.environ.setdefault("PROXY_PORT", "1234")
 os.environ.setdefault("PROXY_USERNAME", "u")
 os.environ.setdefault("PROXY_PASSWORD", "p")
 
-from scrapers.freesupertips import (
+# Ensure the repository root is on sys.path when running this file directly.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from sources.freesupertips import (
+    FreeSuperTipsScraper,
     _parse_match,
     _parse_odds,
     _parse_kickoff,
@@ -86,25 +91,25 @@ def test_parse_odds_text_returns_none():
 def test_parse_kickoff_24h_time_only():
     today = date(2025, 6, 21)
     result = _parse_kickoff("15:00", today)
-    assert result == datetime(2025, 6, 21, 15, 0, tzinfo=timezone.utc)
+    assert result == datetime(2025, 6, 21, 14, 0, tzinfo=timezone.utc)
 
 def test_parse_kickoff_12h_pm():
     today = date(2025, 6, 21)
     result = _parse_kickoff("3:00pm", today)
     assert result is not None
-    assert result.hour == 15
+    assert result.hour == 14
 
 def test_parse_kickoff_12h_noon():
     today = date(2025, 6, 21)
     result = _parse_kickoff("12:00pm", today)
     assert result is not None
-    assert result.hour == 12
+    assert result.hour == 11
 
 def test_parse_kickoff_12h_midnight():
     today = date(2025, 6, 21)
     result = _parse_kickoff("12:00am", today)
     assert result is not None
-    assert result.hour == 0
+    assert result == datetime(2025, 6, 20, 23, 0, tzinfo=timezone.utc)
 
 def test_parse_kickoff_date_only_returns_none():
     today = date(2025, 6, 21)

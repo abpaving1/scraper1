@@ -9,11 +9,14 @@ or standalone:
 
 import os
 import sys
+from pathlib import Path
 
 os.environ.setdefault("PROXY_HOST", "fake-host")
 os.environ.setdefault("PROXY_PORT", "1234")
 os.environ.setdefault("PROXY_USERNAME", "fake-user")
 os.environ.setdefault("PROXY_PASSWORD", "fake-pass")
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sources.olbg import OLBGScraper  # noqa: E402
 

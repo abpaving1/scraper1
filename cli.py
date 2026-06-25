@@ -11,6 +11,8 @@ import sys
 
 from sources.olbg import OLBGScraper
 from sources.forebet import ForebetScraper
+from sources.freesupertips import FreeSuperTipsScraper
+from sources.soccervista import SoccerVistaScraper
 
 from utils.logger import configure_logging, get_logger
 
@@ -19,8 +21,8 @@ logger = get_logger(__name__)
 SCRAPERS = {
     "olbg": OLBGScraper,
     "forebet": ForebetScraper,
-    # "freesupertips": FreeSuperTipsScraper,   # TODO: Convert to BaseSourceScraper
-    # "soccervista": SoccerVistaScraper,       # TODO: Convert to BaseSourceScraper
+    "freesupertips": FreeSuperTipsScraper,
+    "soccervista": SoccerVistaScraper,
 }
 
 
@@ -33,7 +35,7 @@ async def run(source_slug: str) -> None:
         sys.exit(1)
 
     async with scraper_cls() as scraper:
-        picks = await scraper.scrape()
+        picks = await scraper.run()
         logger.info("run_complete", source=source_slug, picks_published=len(picks))
 
 

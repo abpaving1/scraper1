@@ -8,6 +8,7 @@ Run with:
 """
 
 import sys
+from pathlib import Path
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
@@ -17,7 +18,11 @@ os.environ.setdefault("PROXY_PORT", "1234")
 os.environ.setdefault("PROXY_USERNAME", "u")
 os.environ.setdefault("PROXY_PASSWORD", "p")
 
-from scrapers.soccervista import (
+# Ensure the repository root is on sys.path when running this file directly.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from sources.soccervista import (
+    SoccerVistaScraper,
     _parse_probability,
     _probability_to_decimal_odds,
     _derive_confidence,

@@ -9,8 +9,10 @@ Do NOT replace config.py — add these lines to the Settings class body.
 # ADD TO Settings class in config.py:
 # ─────────────────────────────────────────────────────────────────────────────
 
-#   fst_base_url: str = "https://www.freesupertips.com/football-tips/"
-#   soccervista_base_url: str = "https://www.soccervista.com/football-predictions.html"
+#   freesupertips_base_url: str = "https://www.freesupertips.com/football-tips/"
+#   freesupertips_scrape_interval_hours: int = 4
+#   soccervista_base_url: str = "https://www.soccervista.com/"
+#   soccervista_scrape_interval_hours: int = 6
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ADD TO .env (dev) / environment variables (prod):

@@ -244,6 +244,7 @@ class ForebetScraper:
         Yields validated RawPick instances — one per market per match.
         Caller is responsible for publishing to Redis.
         """
+        assert self._context is not None, "Browser context is not initialized"
         page = await self._context.new_page()
         await stealth_async(page)
 
@@ -503,7 +504,7 @@ class ForebetScraper:
             market=MarketType(result.market),
             selection=result.selection,
             odds_decimal=result.odds_decimal,
-            confidence=result.confidence,
+            confidence=Decimal(str(result.confidence)) if result.confidence is not None else None,
             raw_text=result.raw_text,
             posted_at=datetime.now(timezone.utc),
         )

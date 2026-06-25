@@ -25,10 +25,15 @@ from decimal import Decimal
 
 # Patch env vars so config.py loads without real proxy credentials.
 import os
+from pathlib import Path
+
 os.environ.setdefault("PROXY_HOST", "fake-host")
 os.environ.setdefault("PROXY_PORT", "1234")
 os.environ.setdefault("PROXY_USERNAME", "fake-user")
 os.environ.setdefault("PROXY_PASSWORD", "fake-pass")
+
+# Ensure the repository root is on sys.path when running this file directly.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sources.forebet import (
     ForebetScraper,

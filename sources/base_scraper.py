@@ -32,6 +32,7 @@ STORAGE_STATE_DIR.mkdir(exist_ok=True)
 class BaseSourceScraper(ABC):
     source_slug: str  # set by subclass, e.g. "olbg"
     base_url: str  # set by subclass
+    use_proxy: bool = True
 
     def __init__(self) -> None:
         self._publisher = PicksPublisher()
@@ -47,7 +48,7 @@ class BaseSourceScraper(ABC):
             await self._publisher.connect()
             self._playwright = await async_playwright().start()
 
-            proxy = get_proxy_settings()
+            proxy = get_proxy_settings() if getattr(self, "use_proxy", True) else None
             self._browser = await self._playwright.chromium.launch(
                 headless=settings.scrape_headless,
                 proxy=proxy,
@@ -135,6 +136,9 @@ class BaseSourceScraper(ABC):
 
     async def publish_pick(self, pick: RawPick) -> None:
         await self._publisher.publish(pick)
+
+    async def run(self) -> list[RawPick]:
+        return await self.scrape()
 
     @abstractmethod
     async def scrape(self) -> list[RawPick]:
